@@ -1,0 +1,10 @@
+[package]
+name = "rust-8"
+version = "0.1.0"
+authors = ["Nathan Skillen <nskillen@gmail.com>"]
+
+[dependencies]
+rand = "0.3"
+
+[dependencies.tcod]
+git = "https://github.com/tomassedovic/tcod-rs.git"
