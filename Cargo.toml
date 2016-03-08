@@ -5,6 +5,7 @@ authors = ["Nathan Skillen <nskillen@gmail.com>"]
 
 [dependencies]
 rand = "0.3"
+glium_sdl2 = "0.10"
+sdl2 = "0.13"
+glium = "0.13"
 
-[dependencies.tcod]
-git = "https://github.com/tomassedovic/tcod-rs.git"
