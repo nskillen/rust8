@@ -62,34 +62,34 @@ pub struct Hw<'a> {
 }
 
 impl<'a> Hw<'a>  {
-	pub fn new() -> Hw<'a> {
+	pub fn new() -> Option<Hw<'a>> {
 		let sdl_context = match sdl2::init() {
             Ok(context) => context,
-            Err(err) => panic!("Error initializing SDL2: {}", err),
+            Err(err) => { println!("Error initializing SDL2: {}", err); return None },
         };
 
 		let video_subsystem = match sdl_context.video() {
             Ok(video) => video,
-            Err(err) => panic!("Error starting video subsystem: {}", err),
+            Err(err) => { println!("Error starting video subsystem: {}", err); return None },
         };
 
 		let window = match video_subsystem.window("CHIP-8", (PIXEL_WIDTH * DISPLAY_WIDTH) as u32, (PIXEL_HEIGHT * DISPLAY_HEIGHT) as u32)
                                 .position_centered().opengl().build() {
             Ok(display) => display,
-            Err(err) => panic!("Error creating window: {}", err),
+            Err(err) => { println!("Error creating window: {}", err); return None },
         };
 
         let renderer = match window.renderer().build() {
             Ok(renderer) => renderer,
-            Err(err) => panic!("Unable to create renderer: {}", err),
+            Err(err) => { println!("Unable to create renderer: {}", err); return None },
         };
 
 		let mut event_pump = match sdl_context.event_pump() {
             Ok(pump) => pump,
-            Err(err) => panic!("Error creating event pump: {}", err),
+            Err(err) => { println!("Error creating event pump: {}", err); return None },
         };
 
-		Hw {
+		Some(Hw {
 			cpu: cpu::Cpu::new(INTERP_END as u16),
 			memory: [0; MEMORY_SIZE],
 			display_memory: [0; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
@@ -105,7 +105,7 @@ impl<'a> Hw<'a>  {
             quit_requested: false,
 
             last_instruction_time: 0,
-		}
+		})
 	}
 
 	pub fn load_memory(&mut self, base: usize, data: &[u8]) {
