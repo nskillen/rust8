@@ -1,7 +1,8 @@
 use super::hw;
 
 const NUM_GP_REGISTERS : usize = 16; // number of general-purpose registers
-pub const STACK_SIZE	   : usize = 0x0010; // 16 stack addresses
+const TIMER_DECAY_FREQ : usize = 60;  // Hz
+pub const STACK_SIZE   : usize = 0x0010; // 16 stack addresses
 
 #[derive(Debug)]
 pub struct Cpu {
@@ -21,6 +22,8 @@ pub struct Cpu {
 	pub pc: u16, // program counter
 	pub sp: u8,  // stack pointer
 	pub stack: [u16; STACK_SIZE],
+
+    delta_ns_total: u64,
 }
 
 impl Cpu {
@@ -33,6 +36,19 @@ impl Cpu {
 			pc: initial_pc,
 			sp: 0u8,
 			stack: [0u16; STACK_SIZE],
+
+            delta_ns_total: 0,
 		}
 	}
+
+    pub fn decay_timers(&mut self, delta_ns: u64) {
+        self.delta_ns_total += delta_ns;
+        if self.delta_ns_total >= 1e9 as u64 / TIMER_DECAY_FREQ as u64 {
+
+            if self.reg_delay > 0 { self.reg_delay -= 1; }
+            if self.reg_sound > 0 { self.reg_sound -= 1; }
+            
+            self.delta_ns_total -= 1e9 as u64 / TIMER_DECAY_FREQ as u64;
+        }
+    }
 }

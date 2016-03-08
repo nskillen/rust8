@@ -1,10 +1,13 @@
 extern crate rand;
-extern crate glium_sdl2;
+//extern crate glium_sdl2;
 extern crate sdl2;
 
 use rand::Rng;
-use glium_sdl2::{DisplayBuild,SDL2Facade};
+//use glium_sdl2::{DisplayBuild,SDL2Facade};
 use sdl2::EventPump;
+use sdl2::render::Renderer;
+
+use time;
 
 use std::fmt;
 use std::iter::repeat;
@@ -12,10 +15,10 @@ use std::iter::repeat;
 use super::cpu;
 use super::kb;
 
-const MEMORY_SIZE	   : usize = 0x1000; // 4096 bytes of RAM
+const MEMORY_SIZE       : usize = 0x1000; // 4096 bytes of RAM
 
-const INTERP_START	  : usize = 0x0000; // interpreter start address
-const INTERP_END		: usize = 0x0200; // interpreter end address
+const INTERP_START      : usize = 0x0000; // interpreter start address
+const INTERP_END        : usize = 0x0200; // interpreter end address
 pub const INTERP_LENGTH : usize = INTERP_END - INTERP_START;
 
 const HEX_SPRITES_START : usize = 0x0000; // put hex sprites right at the start
@@ -24,15 +27,20 @@ const HEX_SPRITE_COUNT  : usize = 16;	 // there are 16 of them, 0-9A-F
 
 const INSTRUCTION_SIZE  : usize = 2;
 
-const DELAY_RATE_HZ	 : usize = 60; // countdown frequency of the delay register
-const SOUND_RATE_HZ	 : usize = 60; // countdown frequency of the sound register
+const DELAY_RATE_HZ	    : usize = 60; // countdown frequency of the delay register
+const SOUND_RATE_HZ	    : usize = 60; // countdown frequency of the sound register
 
-const DISPLAY_WIDTH	 : usize = 64; // pixels per row
-const DISPLAY_HEIGHT	: usize = 32; // number of rows
+const DISPLAY_WIDTH	    : usize = 64; // pixels per row
+const DISPLAY_HEIGHT    : usize = 32; // number of rows
+
+const PIXEL_WIDTH       : usize = 10; // how many pixels wide
+const PIXEL_HEIGHT      : usize = 10; // and high each CHIP-8 pixel is on screen
 
 const DEBUG_MEMORY_PRINT_WIDTH : usize = 64;
 
-pub struct Hw {
+const CPU_SPEED         : usize = 512; // Hz
+
+pub struct Hw<'a> {
 	cpu: cpu::Cpu,
 
 	// 4Kb of memory
@@ -42,17 +50,19 @@ pub struct Hw {
 
 	kb: kb::Kb,
 
-	display: glium_sdl2::SDL2Facade,
+	display: sdl2::render::Renderer<'a>,
 	event_pump: sdl2::EventPump,
 
     waiting_for_keypress: bool,
     keypress_store_to: usize,
 
     quit_requested: bool,
+
+    last_instruction_time: u64,
 }
 
-impl Hw {
-	pub fn new() -> Hw {
+impl<'a> Hw<'a>  {
+	pub fn new() -> Hw<'a> {
 		let sdl_context = match sdl2::init() {
             Ok(context) => context,
             Err(err) => panic!("Error initializing SDL2: {}", err),
@@ -63,9 +73,15 @@ impl Hw {
             Err(err) => panic!("Error starting video subsystem: {}", err),
         };
 
-		let display = match video_subsystem.window("CHIP-8", 10 * DISPLAY_WIDTH as u32, 10 * DISPLAY_HEIGHT as u32).build_glium() {
+		let window = match video_subsystem.window("CHIP-8", (PIXEL_WIDTH * DISPLAY_WIDTH) as u32, (PIXEL_HEIGHT * DISPLAY_HEIGHT) as u32)
+                                .position_centered().opengl().build() {
             Ok(display) => display,
             Err(err) => panic!("Error creating window: {}", err),
+        };
+
+        let renderer = match window.renderer().build() {
+            Ok(renderer) => renderer,
+            Err(err) => panic!("Unable to create renderer: {}", err),
         };
 
 		let mut event_pump = match sdl_context.event_pump() {
@@ -80,13 +96,15 @@ impl Hw {
 			rng: rand::thread_rng(),
 			kb: kb::Kb::default(),
 
-			display: display,
+			display: renderer,
 			event_pump: event_pump,
 
             waiting_for_keypress: false,
             keypress_store_to: 0,
 
             quit_requested: false,
+
+            last_instruction_time: 0,
 		}
 	}
 
@@ -97,14 +115,23 @@ impl Hw {
 	}
 
 	pub fn run(&mut self) {
+        self.last_instruction_time = time::precise_time_ns();
+
 		while !self.quit_requested {
             if !self.waiting_for_keypress {
     			self.execute_next_instruction();
             }
+            self.decay_timers();
             self.handle_events();
             self.draw();
 		}
 	}
+
+    fn decay_timers(&mut self) {
+        let delta_ns = time::precise_time_ns() - self.last_instruction_time;
+        self.cpu.decay_timers(delta_ns);
+        self.last_instruction_time += delta_ns;
+    }
 
     fn handle_events(&mut self) {
         for event in self.event_pump.poll_iter() {
@@ -140,9 +167,33 @@ impl Hw {
     }
 
     fn draw(&mut self) {
-        let mut target = self.display.draw();
-        //TODO: draw shit
-        target.finish().unwrap();
+        use sdl2::pixels::Color;
+        let black = sdl2::pixels::Color::RGB(0x00, 0x00, 0x00);
+        let white = sdl2::pixels::Color::RGB(0xFF, 0xFF, 0xFF);
+
+        let _ = self.display.set_draw_color(black);
+        let _ = self.display.clear();
+
+        let _ = self.display.set_draw_color(white);
+
+        for row in 0..DISPLAY_HEIGHT {
+            let base = row * (DISPLAY_WIDTH / 8);
+
+            for byte in 0..(DISPLAY_WIDTH / 8) {
+                if self.display_memory[base + byte] == 0 { continue };
+
+                for bit in (0..8).rev() {
+                    use sdl2::rect::Rect;
+                    if self.display_memory[base + byte] & (1 << bit) == 0 { continue; }
+                    let x = ((8 * byte + (7-bit)) * PIXEL_WIDTH) as i32;
+                    let y = (row * PIXEL_HEIGHT) as i32;
+                    let pixel = Rect::new(x, y, PIXEL_WIDTH as u32, PIXEL_HEIGHT as u32).unwrap().unwrap();
+                    let _ = self.display.fill_rect(pixel);
+                }
+            }
+        }
+
+        let _ = self.display.present();
     }
 
 	pub fn execute_next_instruction(&mut self) {
@@ -495,7 +546,7 @@ impl Hw {
 	}
 }
 
-impl fmt::Debug for Hw {
+impl<'a> fmt::Debug for Hw<'a> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		writeln!(f, "Hw: {{");
 		writeln!(f, "\tcpu: {:#?}", self.cpu);

@@ -1,9 +1,6 @@
 extern crate rand;
-
-#[macro_use]
-extern crate glium;
-extern crate glium_sdl2;
 extern crate sdl2;
+extern crate time;
 
 use std::env;
 use std::fs;
