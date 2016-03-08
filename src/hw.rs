@@ -47,17 +47,31 @@ pub struct Hw {
 
     waiting_for_keypress: bool,
     keypress_store_to: usize,
+
+    quit_requested: bool,
 }
 
 impl Hw {
 	pub fn new() -> Hw {
-		let sdl_context = sdl2::init().unwrap();
-		let video_subsystem = sdl_context.video().unwrap();
+		let sdl_context = match sdl2::init() {
+            Ok(context) => context,
+            Err(err) => panic!("Error initializing SDL2: {}", err),
+        };
 
-		let display = video_subsystem.window("CHIP-8", 10 * DISPLAY_WIDTH as u32, 10 * DISPLAY_HEIGHT as u32)
-			.build_glium()
-			.unwrap();
-		let mut event_pump = sdl_context.event_pump().unwrap();
+		let video_subsystem = match sdl_context.video() {
+            Ok(video) => video,
+            Err(err) => panic!("Error starting video subsystem: {}", err),
+        };
+
+		let display = match video_subsystem.window("CHIP-8", 10 * DISPLAY_WIDTH as u32, 10 * DISPLAY_HEIGHT as u32).build_glium() {
+            Ok(display) => display,
+            Err(err) => panic!("Error creating window: {}", err),
+        };
+
+		let mut event_pump = match sdl_context.event_pump() {
+            Ok(pump) => pump,
+            Err(err) => panic!("Error creating event pump: {}", err),
+        };
 
 		Hw {
 			cpu: cpu::Cpu::new(INTERP_END as u16),
@@ -71,6 +85,8 @@ impl Hw {
 
             waiting_for_keypress: false,
             keypress_store_to: 0,
+
+            quit_requested: false,
 		}
 	}
 
@@ -81,40 +97,53 @@ impl Hw {
 	}
 
 	pub fn run(&mut self) {
-		loop {
+		while !self.quit_requested {
             if !self.waiting_for_keypress {
     			self.execute_next_instruction();
             }
-			for event in self.event_pump.poll_iter() {
-				use sdl2::event::Event;
-				match event {
-					Event::Quit { .. } => return,
-                    Event::KeyDown { timestamp, window_id, keycode, scancode, keymod, repeat } => {
-                        if repeat { continue; }
-                        match keycode {
-                            None => continue,
-                            Some(kc) => {
-                                println!("Key pressed: {}", kc);
-                                self.kb.press(kc);
-                                if self.waiting_for_keypress {
-                                    self.waiting_for_keypress = false;
-                                    self.cpu.v[self.keypress_store_to] = self.kb.last_pressed();
-                                }
-                            },
-                        }
-                    },
-                    Event::KeyUp { timestamp, window_id, keycode, scancode, keymod, repeat } => {
-                        if repeat { continue; }
-                        match keycode {
-                            None => continue,
-                            Some(kc) => self.kb.release(kc),
-                        }
-                    },
-					_ => ()
-				}
-			}
+            self.handle_events();
+            self.draw();
 		}
 	}
+
+    fn handle_events(&mut self) {
+        for event in self.event_pump.poll_iter() {
+            use sdl2::event::Event;
+            match event {
+                Event::Quit { .. } => {
+                    self.quit_requested = true
+                },
+                Event::KeyDown { timestamp, window_id, keycode, scancode, keymod, repeat } => {
+                    if repeat { continue; }
+                    match keycode {
+                        None => continue,
+                        Some(kc) => {
+                            println!("Key pressed: {}", kc);
+                            self.kb.press(kc);
+                            if self.waiting_for_keypress {
+                                self.waiting_for_keypress = false;
+                                self.cpu.v[self.keypress_store_to] = self.kb.last_pressed();
+                            }
+                        },
+                    }
+                },
+                Event::KeyUp { timestamp, window_id, keycode, scancode, keymod, repeat } => {
+                    if repeat { continue; }
+                    match keycode {
+                        None => continue,
+                        Some(kc) => self.kb.release(kc),
+                    }
+                },
+                _ => ()
+            }
+        }
+    }
+
+    fn draw(&mut self) {
+        let mut target = self.display.draw();
+        //TODO: draw shit
+        target.finish().unwrap();
+    }
 
 	pub fn execute_next_instruction(&mut self) {
 		let instruction : u16 = (self.memory[self.cpu.pc as usize] as u16) << 8 | (self.memory[(self.cpu.pc + 1) as usize] as u16);
