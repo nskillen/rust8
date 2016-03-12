@@ -1,8 +1,17 @@
 use super::hw;
 
+use std::time::{Duration};
+
 const NUM_GP_REGISTERS : usize = 16; // number of general-purpose registers
-const TIMER_DECAY_FREQ : usize = 60;  // Hz
 pub const STACK_SIZE   : usize = 0x0010; // 16 stack addresses
+pub const FREQUENCY    : u32   = 512; // MHz
+
+const DELAY_RATE_HZ	    : u32 = 60; // countdown frequency of the delay register
+const SOUND_RATE_HZ	    : u32 = 60; // countdown frequency of the sound register
+
+pub const DELAY_TIMER_DECAY_TICK : u32 = 1_000_000_000 / DELAY_RATE_HZ; // 60 Hz
+pub const SOUND_TIMER_DECAY_TICK : u32 = 1_000_000_000 / SOUND_RATE_HZ; // 60 Hz
+
 
 #[derive(Debug)]
 pub struct Cpu {
@@ -23,7 +32,8 @@ pub struct Cpu {
 	pub sp: u8,  // stack pointer
 	pub stack: [u16; STACK_SIZE],
 
-    delta_ns_total: u64,
+    delay_delta: Duration,
+    sound_delta: Duration,
 }
 
 impl Cpu {
@@ -37,18 +47,27 @@ impl Cpu {
 			sp: 0u8,
 			stack: [0u16; STACK_SIZE],
 
-            delta_ns_total: 0,
+            delay_delta: Duration::new(0,0),
+            sound_delta: Duration::new(0,0),
 		}
 	}
 
-    pub fn decay_timers(&mut self, delta_ns: u64) {
-        self.delta_ns_total += delta_ns;
-        if self.delta_ns_total >= 1e9 as u64 / TIMER_DECAY_FREQ as u64 {
-
+    pub fn decay_timers(&mut self, time_taken: Duration) {
+        use core::ops::{Add,Sub};
+        
+        let delay_tick = Duration::new(0,DELAY_TIMER_DECAY_TICK);
+        self.delay_delta = self.delay_delta.add(time_taken);
+        if self.delay_delta.gt(&delay_tick) {
             if self.reg_delay > 0 { self.reg_delay -= 1; }
+            self.delay_delta = self.delay_delta.sub(delay_tick);
+        }
+
+        let sound_tick = Duration::new(0,SOUND_TIMER_DECAY_TICK);
+        self.sound_delta = self.sound_delta.add(time_taken);
+        if self.sound_delta.gt(&sound_tick) {
             if self.reg_sound > 0 { self.reg_sound -= 1; }
-            
-            self.delta_ns_total -= 1e9 as u64 / TIMER_DECAY_FREQ as u64;
+            self.sound_delta = self.sound_delta.sub(sound_tick);
         }
     }
 }
+

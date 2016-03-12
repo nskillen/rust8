@@ -6,4 +6,3 @@ authors = ["Nathan Skillen <nskillen@gmail.com>"]
 [dependencies]
 rand = "0.3"
 sdl2 = "0.13"
-time = "0.1.34"

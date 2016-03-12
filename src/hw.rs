@@ -1,16 +1,13 @@
 extern crate rand;
-//extern crate glium_sdl2;
 extern crate sdl2;
 
 use rand::Rng;
-//use glium_sdl2::{DisplayBuild,SDL2Facade};
-use sdl2::EventPump;
-use sdl2::render::Renderer;
-
-use time;
 
 use std::fmt;
 use std::iter::repeat;
+
+use std::time::{Duration,Instant};
+use std::thread::{sleep};
 
 use super::cpu;
 use super::kb;
@@ -21,14 +18,14 @@ const INTERP_START      : usize = 0x0000; // interpreter start address
 const INTERP_END        : usize = 0x0200; // interpreter end address
 pub const INTERP_LENGTH : usize = INTERP_END - INTERP_START;
 
-const HEX_SPRITES_START : usize = 0x0000; // put hex sprites right at the start
+const BOOT_ROM_START    : u16 = 0x0000;
+const BOOT_ROM_LENGTH   : usize = 0x0070;
+
 const HEX_SPRITE_SIZE   : usize = 5;	  // each sprite is 5 bytes
 const HEX_SPRITE_COUNT  : usize = 16;	 // there are 16 of them, 0-9A-F
+const HEX_SPRITE_START  : usize = 0x0200 - (HEX_SPRITE_COUNT * HEX_SPRITE_SIZE); // put hex sprites immediately before the program code
 
 const INSTRUCTION_SIZE  : usize = 2;
-
-const DELAY_RATE_HZ	    : usize = 60; // countdown frequency of the delay register
-const SOUND_RATE_HZ	    : usize = 60; // countdown frequency of the sound register
 
 const DISPLAY_WIDTH	    : usize = 64; // pixels per row
 const DISPLAY_HEIGHT    : usize = 32; // number of rows
@@ -38,7 +35,8 @@ const PIXEL_HEIGHT      : usize = 10; // and high each CHIP-8 pixel is on screen
 
 const DEBUG_MEMORY_PRINT_WIDTH : usize = 64;
 
-const CPU_SPEED         : usize = 512; // Hz
+const CPU_FREQUENCY : u32 = 4 * 1024; // 4 MHz 
+const INSTRUCTION_DURATION : u32 = 1_000_000_000 / CPU_FREQUENCY;
 
 pub struct Hw<'a> {
 	cpu: cpu::Cpu,
@@ -57,8 +55,6 @@ pub struct Hw<'a> {
     keypress_store_to: usize,
 
     quit_requested: bool,
-
-    last_instruction_time: u64,
 }
 
 impl<'a> Hw<'a>  {
@@ -89,8 +85,8 @@ impl<'a> Hw<'a>  {
             Err(err) => { println!("Error creating event pump: {}", err); return None },
         };
 
-		Some(Hw {
-			cpu: cpu::Cpu::new(INTERP_END as u16),
+        let mut hw = Hw {
+			cpu: cpu::Cpu::new(BOOT_ROM_START),
 			memory: [0; MEMORY_SIZE],
 			display_memory: [0; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
 			rng: rand::thread_rng(),
@@ -103,10 +99,84 @@ impl<'a> Hw<'a>  {
             keypress_store_to: 0,
 
             quit_requested: false,
+		};
 
-            last_instruction_time: 0,
-		})
+        hw.cpu.pc = 0x0200;
+        hw.load_boot_rom();
+        hw.populate_hex_sprites();
+
+        Some(hw)
 	}
+
+    fn populate_hex_sprites(&mut self) {
+        let sprite_data : [u8; 80] = [
+                0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+                0x20, 0x60, 0x20, 0x20, 0x70, // 1
+                0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+                0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+                0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+                0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+                0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+                0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+                0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+                0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+                0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+                0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+                0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+                0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+                0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+                0xF0, 0x80, 0xE0, 0x80, 0x80, // F
+            ];
+        for (off, b) in sprite_data.iter().enumerate() {
+            self.memory[HEX_SPRITE_START + off] = *b;
+        }
+    }
+
+    fn load_boot_rom(&mut self) {
+        let boot_rom : [u8; BOOT_ROM_LENGTH] = [
+                /* BOOT PROGRAM
+                 * Displays the string 'CHIP-8' in 8x10 characters, flashes 3 times for 1 second
+                 * each, then loads the actual program
+                 */
+                0x00, 0xE0, // 0x0000 :: CLS
+                0x60, 0x03, // 0x0002 :: LD V0, 3       - blink count
+                0xA0, 0x34, // 0x0004 :: LD I, 0x0034   - address of 'C' in 'CHIP-8'
+                0x61, 0x03, // 0x0006 :: LD V1, 3       - starting x position
+                0x62, 0x0B, // 0x0008 :: LD V2, 11      - starting y position
+                0x63, 0x0A, // 0x000A :: LD V3, 10      - sprite size, in bytes
+                0xD1, 0x2A, // 0x000C :: DRW V1, V2, 10 - draw 10-byte sprite at [I] at V0,V1
+                0x71, 0x0A, // 0x000E :: ADD V1, 10     - increase x position
+                0xF3, 0x1E, // 0x0010 :: ADD I, V3      - add 10 to I
+                0x31, 0x3F, // 0x0012 :: SE V1, 63      - skip next instruction if V1 == 63
+                0x10, 0x0C, // 0x0014 :: JMP 0x00C      - jump back to draw command
+                0x64, 0x20, // 0x0016 :: LD V4, 32      - time for delay timer
+                0xF4, 0x15, // 0x0018 :: LD DT, V4      - load V4 into delay timer
+                0xF5, 0x07, // 0x001A :: LD V5, DT      - load delay timer into v5
+                0x35, 0x00, // 0x001C :: SE V5, 0       - skip next instruction if V5 == 0
+                0x10, 0x1A, // 0x001E :: JMP 0x001A     - wait for delay timer to expire
+                0x00, 0xE0, // 0x0020 :: CLS
+                0x64, 0x14, // 0x0022 :: LD V4, 20      - time for delay timer
+                0xF4, 0x15, // 0x0024 :: LD DT, V4      - load V4 into delay timer
+                0xF5, 0x07, // 0x0026 :: LD V5, DT      - load delay timer into v5
+                0x35, 0x00, // 0x0028 :: SE V5, 0       - skip next instruction if V5 == 0
+                0x10, 0x26, // 0x002A :: JMP 0x0026     - wait for delay timer to expire
+                0x70, 0xFF, // 0x002C :: ADD V0, 255    - effectively, subtract 1 from V0
+                0x30, 0x00, // 0x002E :: SE V0, 0       - skip next instruction if V0 == 0
+                0x10, 0x04, // 0x0030 :: JMP 0x0004     - jump back to beginning of draw cycle
+                0x12, 0x00, // 0x0032 :: JMP 0x0200     - jump to beginning of actual program
+                /* SPRITE DATA */
+                0xFF, 0xFF, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xFF, 0xFF, // 'C', 0x0034 - 0x003D
+                0xC3, 0xC3, 0xC3, 0xC3, 0xFF, 0xFF, 0xC3, 0xC3, 0xC3, 0xC3, // 'H', 0x003E - 0x0047
+                0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, // 'I', 0x0048 - 0x0051
+                0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, 0xC0, 0xC0, 0xC0, 0xC0, // 'P', 0x0052 - 0x005B
+                0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, // '-', 0x005C - 0x0065
+                0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, // '8', 0x0066 - 0x006F
+            ];
+        for (offset, byte) in boot_rom.iter().enumerate() {
+            self.memory[BOOT_ROM_START as usize + offset] = *byte;
+        }
+        self.cpu.pc = 0x0000;
+    }
 
 	pub fn load_memory(&mut self, base: usize, data: &[u8]) {
 		for offset in 0..data.len() {
@@ -115,23 +185,23 @@ impl<'a> Hw<'a>  {
 	}
 
 	pub fn run(&mut self) {
-        self.last_instruction_time = time::precise_time_ns();
-
+        use core::ops::Sub;
 		while !self.quit_requested {
+            let begin = Instant::now();
             if !self.waiting_for_keypress {
-    			self.execute_next_instruction();
+                self.execute_next_instruction();
             }
-            self.decay_timers();
             self.handle_events();
             self.draw();
+            let time_taken = Instant::now().duration_since(begin);
+
+            self.cpu.decay_timers(time_taken);
+            if time_taken.subsec_nanos() < INSTRUCTION_DURATION {
+                let sleep_dur = Duration::new(0,INSTRUCTION_DURATION - time_taken.subsec_nanos());
+                sleep(sleep_dur);
+            }
 		}
 	}
-
-    fn decay_timers(&mut self) {
-        let delta_ns = time::precise_time_ns() - self.last_instruction_time;
-        self.cpu.decay_timers(delta_ns);
-        self.last_instruction_time += delta_ns;
-    }
 
     fn handle_events(&mut self) {
         for event in self.event_pump.poll_iter() {
@@ -145,7 +215,6 @@ impl<'a> Hw<'a>  {
                     match keycode {
                         None => continue,
                         Some(kc) => {
-                            println!("Key pressed: {}", kc);
                             self.kb.press(kc);
                             if self.waiting_for_keypress {
                                 self.waiting_for_keypress = false;
@@ -170,11 +239,12 @@ impl<'a> Hw<'a>  {
         use sdl2::pixels::Color;
         let black = sdl2::pixels::Color::RGB(0x00, 0x00, 0x00);
         let white = sdl2::pixels::Color::RGB(0xFF, 0xFF, 0xFF);
+        let red   = sdl2::pixels::Color::RGB(0xFF, 0x99, 0x99);
 
         let _ = self.display.set_draw_color(black);
         let _ = self.display.clear();
 
-        let _ = self.display.set_draw_color(white);
+        let _ = self.display.set_draw_color(if self.cpu.reg_sound > 0 { red } else { white });
 
         for row in 0..DISPLAY_HEIGHT {
             let base = row * (DISPLAY_WIDTH / 8);
@@ -196,7 +266,7 @@ impl<'a> Hw<'a>  {
         let _ = self.display.present();
     }
 
-	pub fn execute_next_instruction(&mut self) {
+	fn execute_next_instruction(&mut self) {
 		let instruction : u16 = (self.memory[self.cpu.pc as usize] as u16) << 8 | (self.memory[(self.cpu.pc + 1) as usize] as u16);
 
 		self.cpu.pc += INSTRUCTION_SIZE as u16; // increment program counter by 2 bytes. Done now, so that we don't increment after jumping
@@ -231,6 +301,9 @@ impl<'a> Hw<'a>  {
 			},
 			0x1000 => {
 				// JMP
+                if dest_addr >= MEMORY_SIZE as u16 {
+                    panic!("Tried to jump beyond the universe!\nPC: 0x{:#x}\nInstruction: 0x{:#x}", self.cpu.pc, instruction);
+                }
 				self.cpu.pc = dest_addr;
 			},
 			0x2000 => {
@@ -382,6 +455,9 @@ impl<'a> Hw<'a>  {
 						// so no need for any fancy crap to split the bits
 
 						let offset = y as usize * (DISPLAY_WIDTH / 8) + (x / 8) as usize;
+                        if offset > 0x100 {
+                            panic!("\nDisplay offset out of bounds!\nPC: {:#04X}\nInstruction: {:#04X}\nX: {:#?}, Y: {:#?}\n{:#?}", self.cpu.pc, instruction, x, y, self.cpu);
+                        }
 						let old_byte = self.display_memory[offset];
 						let new_byte = *byte ^ old_byte;
 
@@ -469,7 +545,7 @@ impl<'a> Hw<'a>  {
 						if sprite > 0x0F {
 							panic!("Requested hex sprite '{:#x}' is not valid", sprite);
 						}
-						self.cpu.i = (HEX_SPRITES_START + (HEX_SPRITE_SIZE * sprite as usize)) as u16;
+						self.cpu.i = (HEX_SPRITE_START + (HEX_SPRITE_SIZE * sprite as usize)) as u16;
 					},
 					0xF033 => {
 						// LD B, Vx
